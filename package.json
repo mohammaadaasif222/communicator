@@ -12,7 +12,6 @@
     "check": "npx tsc",
     "db:push": "npx drizzle-kit push",
     "postinstall": "if [ \"$NODE_ENV\" != \"production\" ]; then npm run check; fi"
-
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
