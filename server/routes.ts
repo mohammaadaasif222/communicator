@@ -4,7 +4,12 @@ import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { setupAuth, hashPassword } from "./auth";
 import { zoomService } from "./services/zoomService";
-import { insertUserSchema, insertCompanySchema, insertMessageSchema, User } from "@shared/schema";
+import {
+  insertUserSchema,
+  insertCompanySchema,
+  insertMessageSchema,
+  User,
+} from "@shared/schema";
 import { z } from "zod";
 import multer from "multer";
 import path from "path";
@@ -19,7 +24,7 @@ if (!fs.existsSync(uploadsDir)) {
 const upload = multer({
   dest: uploadsDir,
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['audio/wav', 'audio/mpeg', 'audio/webm', 'audio/ogg'];
+    const allowedTypes = ["audio/wav", "audio/mpeg", "audio/webm", "audio/ogg"];
     cb(null, allowedTypes.includes(file.mimetype));
   },
   limits: {
@@ -39,12 +44,12 @@ function requireRole(roles: string[]) {
     if (!req.isAuthenticated()) {
       return res.status(401).json({ message: "Authentication required" });
     }
-    
+
     const user = req.user as User;
     if (!roles.includes(user.role)) {
       return res.status(403).json({ message: "Insufficient permissions" });
     }
-    
+
     next();
   };
 }
@@ -53,68 +58,89 @@ export function registerRoutes(app: Express): Server {
   setupAuth(app);
 
   // User Management Endpoints
-  app.post("/api/users/create-company-admin", requireRole(["super_admin"]), async (req, res, next) => {
-    try {
-      const validation = insertUserSchema.extend({
-        role: z.literal("company_admin"),
-      }).safeParse(req.body);
-      
-      if (!validation.success) {
-        return res.status(400).json({ message: "Invalid user data" });
+  app.post(
+    "/api/users/create-company-admin",
+    requireRole(["super_admin"]),
+    async (req, res, next) => {
+      try {
+        const validation = insertUserSchema
+          .extend({
+            role: z.literal("company_admin"),
+          })
+          .safeParse(req.body);
+
+        if (!validation.success) {
+          return res.status(400).json({ message: "Invalid user data" });
+        }
+
+        const existingUser = await storage.getUserByEmail(
+          validation.data.email
+        );
+        if (existingUser) {
+          return res.status(400).json({ message: "Email already exists" });
+        }
+
+        const user = await storage.createUser({
+          ...validation.data,
+          password: await hashPassword(validation.data.password),
+          createdBy: req.user?.id,
+        });
+
+        const { password, ...userWithoutPassword } = user;
+        res.status(201).json(userWithoutPassword);
+      } catch (error) {
+        next(error);
       }
-
-      const existingUser = await storage.getUserByEmail(validation.data.email);
-      if (existingUser) {
-        return res.status(400).json({ message: "Email already exists" });
-      }
-
-      const user = await storage.createUser({
-        ...validation.data,
-        password: await hashPassword(validation.data.password),
-        createdBy: req.user?.id,
-      });
-
-      const { password, ...userWithoutPassword } = user;
-      res.status(201).json(userWithoutPassword);
-    } catch (error) {
-      next(error);
     }
-  });
+  );
 
-  app.post("/api/users/create-employee", requireRole(["super_admin", "company_admin"]), async (req, res, next) => {
-    try {
-      const validation = insertUserSchema.extend({
-        role: z.literal("employee"),
-      }).safeParse(req.body);
-      
-      if (!validation.success) {
-        return res.status(400).json({ message: "Invalid user data" });
+  app.post(
+    "/api/users/create-employee",
+    requireRole(["super_admin", "company_admin"]),
+    async (req, res, next) => {
+      try {
+        const validation = insertUserSchema
+          .extend({
+            role: z.literal("employee"),
+          })
+          .safeParse(req.body);
+
+        if (!validation.success) {
+          return res.status(400).json({ message: "Invalid user data" });
+        }
+
+        const currentUser = req.user as User;
+
+        // Company admin can only create employees for their company
+        if (
+          currentUser.role === "company_admin" &&
+          validation.data.companyId !== currentUser.companyId
+        ) {
+          return res
+            .status(403)
+            .json({ message: "Can only create employees for your company" });
+        }
+
+        const existingUser = await storage.getUserByEmail(
+          validation.data.email
+        );
+        if (existingUser) {
+          return res.status(400).json({ message: "Email already exists" });
+        }
+
+        const user = await storage.createUser({
+          ...validation.data,
+          password: await hashPassword(validation.data.password),
+          createdBy: req.user?.id,
+        });
+
+        const { password, ...userWithoutPassword } = user;
+        res.status(201).json(userWithoutPassword);
+      } catch (error) {
+        next(error);
       }
-
-      const currentUser = req.user as User;
-      
-      // Company admin can only create employees for their company
-      if (currentUser.role === "company_admin" && validation.data.companyId !== currentUser.companyId) {
-        return res.status(403).json({ message: "Can only create employees for your company" });
-      }
-
-      const existingUser = await storage.getUserByEmail(validation.data.email);
-      if (existingUser) {
-        return res.status(400).json({ message: "Email already exists" });
-      }
-
-      const user = await storage.createUser({
-        ...validation.data,
-        password: await hashPassword(validation.data.password),
-        createdBy: req.user?.id,
-      });
-
-      const { password, ...userWithoutPassword } = user;
-      res.status(201).json(userWithoutPassword);
-    } catch (error) {
-      next(error);
     }
-  });
+  );
 
   app.get("/api/users", requireAuth, async (req, res, next) => {
     try {
@@ -125,13 +151,16 @@ export function registerRoutes(app: Express): Server {
         users = await storage.getUsersByRole("company_admin");
         const employees = await storage.getUsersByRole("employee");
         users = [...users, ...employees];
-      } else if (currentUser.role === "company_admin" && currentUser.companyId) {
+      } else if (
+        currentUser.role === "company_admin" &&
+        currentUser.companyId
+      ) {
         users = await storage.getUsersByCompany(currentUser.companyId);
       }
 
       const usersWithoutPasswords = users.map(({ password, ...user }) => ({
         ...user,
-        deviceInfo: user.deviceInfo ? JSON.parse(user.deviceInfo) : null
+        deviceInfo: user.deviceInfo ? JSON.parse(user.deviceInfo) : null,
       }));
       res.json(usersWithoutPasswords);
     } catch (error) {
@@ -140,55 +169,65 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Block/Unblock user
-  app.patch("/api/users/:id/block", requireRole(["super_admin", "company_admin"]), async (req, res, next) => {
-    try {
-      const userId = parseInt(req.params.id);
-      const { isBlocked } = req.body;
-      const currentUser = req.user as User;
+  app.patch(
+    "/api/users/:id/block",
+    requireRole(["super_admin", "company_admin"]),
+    async (req, res, next) => {
+      try {
+        const userId = parseInt(req.params.id);
+        const { isBlocked } = req.body;
+        const currentUser = req.user as User;
 
-      // Company admin can only block users in their company
-      if (currentUser.role === "company_admin") {
-        const targetUser = await storage.getUser(userId);
-        if (!targetUser || targetUser.companyId !== currentUser.companyId) {
-          return res.status(403).json({ message: "Can only manage users in your company" });
+        // Company admin can only block users in their company
+        if (currentUser.role === "company_admin") {
+          const targetUser = await storage.getUser(userId);
+          if (!targetUser || targetUser.companyId !== currentUser.companyId) {
+            return res
+              .status(403)
+              .json({ message: "Can only manage users in your company" });
+          }
         }
-      }
 
-      const updatedUser = await storage.updateUser(userId, { isBlocked });
-      if (!updatedUser) {
-        return res.status(404).json({ message: "User not found" });
-      }
+        const updatedUser = await storage.updateUser(userId, { isBlocked });
+        if (!updatedUser) {
+          return res.status(404).json({ message: "User not found" });
+        }
 
-      const { password, ...userWithoutPassword } = updatedUser;
-      res.json(userWithoutPassword);
-    } catch (error) {
-      next(error);
+        const { password, ...userWithoutPassword } = updatedUser;
+        res.json(userWithoutPassword);
+      } catch (error) {
+        next(error);
+      }
     }
-  });
+  );
 
   // Company Management Endpoints
-  app.post("/api/companies", requireRole(["super_admin"]), async (req, res, next) => {
-    try {
-      const validation = insertCompanySchema.safeParse(req.body);
-      if (!validation.success) {
-        return res.status(400).json({ message: "Invalid company data" });
+  app.post(
+    "/api/companies",
+    requireRole(["super_admin"]),
+    async (req, res, next) => {
+      try {
+        const validation = insertCompanySchema.safeParse(req.body);
+        if (!validation.success) {
+          return res.status(400).json({ message: "Invalid company data" });
+        }
+
+        const company = await storage.createCompany({
+          ...validation.data,
+          createdBy: req.user?.id,
+        });
+
+        res.status(201).json(company);
+      } catch (error) {
+        next(error);
       }
-
-      const company = await storage.createCompany({
-        ...validation.data,
-        createdBy: req.user?.id,
-      });
-
-      res.status(201).json(company);
-    } catch (error) {
-      next(error);
     }
-  });
+  );
 
   app.get("/api/companies", requireAuth, async (req, res, next) => {
     try {
       const currentUser = req.user as User;
-      
+
       if (currentUser.role === "super_admin") {
         const companies = await storage.getAllCompanies();
         // Auto-initialize meetings for companies without one
@@ -208,7 +247,9 @@ export function registerRoutes(app: Express): Server {
         if (company && !company.zoomMeetingId) {
           try {
             await zoomService.createMeeting(company.id, currentUser.id);
-            const updatedCompany = await storage.getCompany(currentUser.companyId);
+            const updatedCompany = await storage.getCompany(
+              currentUser.companyId
+            );
             res.json(updatedCompany ? [updatedCompany] : []);
           } catch (error) {
             res.json(company ? [company] : []);
@@ -228,9 +269,12 @@ export function registerRoutes(app: Express): Server {
     try {
       const companyId = parseInt(req.params.id);
       const currentUser = req.user as User;
-      
+
       // Check permissions
-      if (currentUser.role !== "super_admin" && currentUser.companyId !== companyId) {
+      if (
+        currentUser.role !== "super_admin" &&
+        currentUser.companyId !== companyId
+      ) {
         return res.status(403).json({ message: "Insufficient permissions" });
       }
 
@@ -245,51 +289,66 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.delete("/api/companies/:id", requireRole(["super_admin"]), async (req, res, next) => {
-    try {
-      const companyId = parseInt(req.params.id);
-      const success = await storage.deleteCompany(companyId);
-      
-      if (!success) {
-        return res.status(404).json({ message: "Company not found" });
-      }
+  app.delete(
+    "/api/companies/:id",
+    requireRole(["super_admin"]),
+    async (req, res, next) => {
+      try {
+        const companyId = parseInt(req.params.id);
+        const success = await storage.deleteCompany(companyId);
 
-      res.sendStatus(204);
-    } catch (error) {
-      next(error);
+        if (!success) {
+          return res.status(404).json({ message: "Company not found" });
+        }
+
+        res.sendStatus(204);
+      } catch (error) {
+        next(error);
+      }
     }
-  });
+  );
 
   // Zoom Integration Endpoints
-  app.post("/api/zoom/create-meeting", requireRole(["company_admin"]), async (req, res, next) => {
-    try {
-      const currentUser = req.user as User;
-      
-      if (!currentUser.companyId) {
-        return res.status(400).json({ message: "No company assigned" });
-      }
+  app.post(
+    "/api/zoom/create-meeting",
+    requireRole(["company_admin"]),
+    async (req, res, next) => {
+      try {
+        const currentUser = req.user as User;
 
-      const meeting = await zoomService.createMeeting(currentUser.companyId, currentUser.id);
-      res.json(meeting);
-    } catch (error) {
-      next(error);
+        if (!currentUser.companyId) {
+          return res.status(400).json({ message: "No company assigned" });
+        }
+
+        const meeting = await zoomService.createMeeting(
+          currentUser.companyId,
+          currentUser.id
+        );
+        res.json(meeting);
+      } catch (error) {
+        next(error);
+      }
     }
-  });
+  );
 
   app.get("/api/zoom/meeting-info", requireAuth, async (req, res, next) => {
     try {
       const currentUser = req.user as User;
-      
+
       if (!currentUser.companyId) {
         return res.status(400).json({ message: "No company assigned" });
       }
 
       const company = await storage.getCompany(currentUser.companyId);
       if (!company || !company.zoomMeetingId) {
-        return res.status(404).json({ message: "No meeting found for this company" });
+        return res
+          .status(404)
+          .json({ message: "No meeting found for this company" });
       }
 
-      const meetingInfo = await zoomService.getMeetingInfo(company.zoomMeetingId);
+      const meetingInfo = await zoomService.getMeetingInfo(
+        company.zoomMeetingId
+      );
       res.json(meetingInfo);
     } catch (error) {
       next(error);
@@ -297,39 +356,47 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Messaging Endpoints
-  app.post("/api/messages/send", requireRole(["employee"]), async (req, res, next) => {
-    try {
-      const currentUser = req.user as User;
-      
-      if (!currentUser.companyId) {
-        return res.status(400).json({ message: "No company assigned" });
+  app.post(
+    "/api/messages/send",
+    requireRole(["employee"]),
+    async (req, res, next) => {
+      try {
+        const currentUser = req.user as User;
+
+        if (!currentUser.companyId) {
+          return res.status(400).json({ message: "No company assigned" });
+        }
+
+        // Find company admin for this company
+        const companyUsers = await storage.getUsersByCompany(
+          currentUser.companyId
+        );
+        const companyAdmin = companyUsers.find(
+          (user) => user.role === "company_admin"
+        );
+
+        if (!companyAdmin) {
+          return res.status(404).json({ message: "No company admin found" });
+        }
+
+        const validation = insertMessageSchema.safeParse({
+          ...req.body,
+          senderId: currentUser.id,
+          receiverId: companyAdmin.id,
+          companyId: currentUser.companyId,
+        });
+
+        if (!validation.success) {
+          return res.status(400).json({ message: "Invalid message data" });
+        }
+
+        const message = await storage.createMessage(validation.data);
+        res.status(201).json(message);
+      } catch (error) {
+        next(error);
       }
-
-      // Find company admin for this company
-      const companyUsers = await storage.getUsersByCompany(currentUser.companyId);
-      const companyAdmin = companyUsers.find(user => user.role === "company_admin");
-      
-      if (!companyAdmin) {
-        return res.status(404).json({ message: "No company admin found" });
-      }
-
-      const validation = insertMessageSchema.safeParse({
-        ...req.body,
-        senderId: currentUser.id,
-        receiverId: companyAdmin.id,
-        companyId: currentUser.companyId,
-      });
-
-      if (!validation.success) {
-        return res.status(400).json({ message: "Invalid message data" });
-      }
-
-      const message = await storage.createMessage(validation.data);
-      res.status(201).json(message);
-    } catch (error) {
-      next(error);
     }
-  });
+  );
 
   app.get("/api/messages", requireAuth, async (req, res, next) => {
     try {
@@ -352,7 +419,7 @@ export function registerRoutes(app: Express): Server {
     try {
       const messageId = parseInt(req.params.id);
       const success = await storage.markMessageAsRead(messageId);
-      
+
       if (!success) {
         return res.status(404).json({ message: "Message not found" });
       }
@@ -363,96 +430,306 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.post("/api/messages/voice", requireRole(["employee"]), upload.single("voice"), async (req, res, next) => {
+  app.get("/api/uploads/voice/:filename", requireAuth, async (req, res, next) => {
     try {
-      if (!req.file) {
-        return res.status(400).json({ message: "No voice file uploaded" });
-      }
-
+      const { filename } = req.params;
       const currentUser = req.user as User;
-      
-      if (!currentUser.companyId) {
-        return res.status(400).json({ message: "No company assigned" });
+
+      if (
+        !filename ||
+        filename.includes("..") ||
+        filename.includes("/") ||
+        filename.includes("\\")
+      ) {
+        return res.status(400).json({ message: "Invalid filename" });
       }
 
-      // Find company admin
-      const companyUsers = await storage.getUsersByCompany(currentUser.companyId);
-      const companyAdmin = companyUsers.find(user => user.role === "company_admin");
-      
-      if (!companyAdmin) {
-        return res.status(404).json({ message: "No company admin found" });
+      // Construct the full file path
+      const filePath = path.join(process.cwd(), "uploads", "voice", filename);
+
+      // Check if file exists
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ message: "Audio file not found" });
       }
 
-      const message = await storage.createMessage({
-        senderId: currentUser.id,
-        receiverId: companyAdmin.id,
-        companyId: currentUser.companyId,
-        messageType: "voice",
-        content: `/uploads/voice/${req.file.filename}`,
+      // Optional: Check if user has permission to access this audio file
+      // You can verify if the user is involved in the message containing this audio
+      try {
+        const audioPath = `/uploads/voice/${filename}`;
+
+        if (currentUser.role === "company_admin" && currentUser.companyId) {
+          // Company admin can access all audio files from their company
+          const messages = await storage.getCompanyMessages(
+            currentUser.companyId
+          );
+          const hasAccess = messages.some((msg) => msg.content === audioPath);
+
+          if (!hasAccess) {
+            return res
+              .status(403)
+              .json({ message: "Access denied to this audio file" });
+          }
+        } else if (currentUser.role === "employee") {
+          // Employee can only access their own audio files
+          const userMessages = await storage.getMessagesBySender(
+            currentUser.id
+          );
+          const hasAccess = userMessages.some(
+            (msg) => msg.content === audioPath
+          );
+
+          if (!hasAccess) {
+            return res
+              .status(403)
+              .json({ message: "Access denied to this audio file" });
+          }
+        } else if (currentUser.role !== "super_admin") {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+      } catch (permissionError) {
+        console.warn(
+          "Could not verify audio file permissions:",
+          permissionError
+        );
+        // Continue serving the file if permission check fails (fallback)
+      }
+
+      // Get file stats for proper headers
+      const stats = fs.statSync(filePath);
+
+      // Determine MIME type based on file extension
+      const ext = path.extname(filename).toLowerCase();
+      let mimeType = "audio/mpeg"; // default for mp3
+
+      switch (ext) {
+        case ".mp3":
+          mimeType = "audio/mpeg";
+          break;
+        case ".wav":
+          mimeType = "audio/wav";
+          break;
+        case ".ogg":
+          mimeType = "audio/ogg";
+          break;
+        case ".webm":
+          mimeType = "audio/webm";
+          break;
+        case ".m4a":
+          mimeType = "audio/mp4";
+          break;
+        default:
+          mimeType = "audio/mpeg";
+      }
+
+      // Set proper headers for audio streaming
+      res.set({
+        "Content-Type": mimeType,
+        "Content-Length": stats.size.toString(),
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=31536000", // Cache for 1 year
+        "Content-Disposition": "inline", // Play in browser, not download
       });
 
-      res.status(201).json(message);
+      // Handle range requests for better audio streaming
+      const range = req.headers.range;
+
+      if (range) {
+        // Parse range header
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
+        const chunksize = end - start + 1;
+
+        // Validate range
+        if (start >= stats.size || end >= stats.size) {
+          res.status(416).set({
+            "Content-Range": `bytes */${stats.size}`,
+          });
+          return res.end();
+        }
+
+        // Set partial content headers
+        res.status(206).set({
+          "Content-Range": `bytes ${start}-${end}/${stats.size}`,
+          "Content-Length": chunksize.toString(),
+        });
+
+        // Create read stream with range
+        const stream = fs.createReadStream(filePath, { start, end });
+        stream.pipe(res);
+      } else {
+        // Send entire file
+        const stream = fs.createReadStream(filePath);
+        stream.pipe(res);
+      }
     } catch (error) {
+      console.error("Error serving audio file:", error);
       next(error);
     }
   });
+
+  // Alternative: Simpler version without range support (if you don't need streaming)
+  app.get("/api/audio/:filename", requireAuth, async (req, res, next) => {
+    try {
+      const { filename } = req.params;
+
+      // Security check
+      if (!filename || filename.includes("..") || filename.includes("/")) {
+        return res.status(400).json({ message: "Invalid filename" });
+      }
+
+      const filePath = path.join(process.cwd(), "uploads", "voice", filename);
+
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ message: "Audio file not found" });
+      }
+
+      // Set content type
+      const ext = path.extname(filename).toLowerCase();
+      let mimeType = "audio/mpeg";
+
+      switch (ext) {
+        case ".mp3":
+          mimeType = "audio/mpeg";
+          break;
+        case ".wav":
+          mimeType = "audio/wav";
+          break;
+        case ".ogg":
+          mimeType = "audio/ogg";
+          break;
+        case ".webm":
+          mimeType = "audio/webm";
+          break;
+        case ".m4a":
+          mimeType = "audio/mp4";
+          break;
+      }
+
+      res.setHeader("Content-Type", mimeType);
+      res.setHeader("Cache-Control", "public, max-age=3600"); // Cache for 1 hour
+
+      // Send file
+      res.sendFile(filePath);
+    } catch (error) {
+      console.error("Error serving audio file:", error);
+      next(error);
+    }
+  });
+
+  app.post(
+    "/api/messages/voice",
+    requireRole(["employee"]),
+    upload.single("voice"),
+    async (req, res, next) => {
+      try {
+        if (!req.file) {
+          return res.status(400).json({ message: "No voice file uploaded" });
+        }
+
+        const currentUser = req.user as User;
+
+        if (!currentUser.companyId) {
+          return res.status(400).json({ message: "No company assigned" });
+        }
+
+        // Find company admin
+        const companyUsers = await storage.getUsersByCompany(
+          currentUser.companyId
+        );
+        const companyAdmin = companyUsers.find(
+          (user) => user.role === "company_admin"
+        );
+
+        if (!companyAdmin) {
+          return res.status(404).json({ message: "No company admin found" });
+        }
+
+        const message = await storage.createMessage({
+          senderId: currentUser.id,
+          receiverId: companyAdmin.id,
+          companyId: currentUser.companyId,
+          messageType: "voice",
+          content: `/uploads/voice/${req.file.filename}`,
+        });
+
+        res.status(201).json(message);
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   // Database Query Interface (Development only)
-  app.post("/api/database/query", requireRole(["super_admin"]), async (req, res, next) => {
-    try {
-      const { query } = req.body;
-      
-      if (!query || typeof query !== "string") {
-        return res.status(400).json({ message: "Invalid query" });
-      }
+  app.post(
+    "/api/database/query",
+    requireRole(["super_admin"]),
+    async (req, res, next) => {
+      try {
+        const { query } = req.body;
 
-      // Basic safety check - prevent destructive operations in production
-      if (process.env.NODE_ENV === "production") {
-        const destructiveKeywords = ["DROP", "DELETE", "TRUNCATE", "ALTER"];
-        const upperQuery = query.toUpperCase();
-        
-        if (destructiveKeywords.some(keyword => upperQuery.includes(keyword))) {
-          return res.status(403).json({ message: "Destructive queries not allowed in production" });
+        if (!query || typeof query !== "string") {
+          return res.status(400).json({ message: "Invalid query" });
         }
-      }
 
-      const result = await storage.executeQuery(query);
-      res.json(result);
-    } catch (error) {
-      next(error);
+        // Basic safety check - prevent destructive operations in production
+        if (process.env.NODE_ENV === "production") {
+          const destructiveKeywords = ["DROP", "DELETE", "TRUNCATE", "ALTER"];
+          const upperQuery = query.toUpperCase();
+
+          if (
+            destructiveKeywords.some((keyword) => upperQuery.includes(keyword))
+          ) {
+            return res
+              .status(403)
+              .json({
+                message: "Destructive queries not allowed in production",
+              });
+          }
+        }
+
+        const result = await storage.executeQuery(query);
+        res.json(result);
+      } catch (error) {
+        next(error);
+      }
     }
-  });
+  );
 
   // Statistics endpoint
-  app.get("/api/stats", requireRole(["super_admin"]), async (req, res, next) => {
-    try {
-      const companies = await storage.getAllCompanies();
-      const companyAdmins = await storage.getUsersByRole("company_admin");
-      const employees = await storage.getUsersByRole("employee");
-      
-      const activeMeetings = companies.filter(c => c.zoomMeetingId).length;
+  app.get(
+    "/api/stats",
+    requireRole(["super_admin"]),
+    async (req, res, next) => {
+      try {
+        const companies = await storage.getAllCompanies();
+        const companyAdmins = await storage.getUsersByRole("company_admin");
+        const employees = await storage.getUsersByRole("employee");
 
-      res.json({
-        companies: companies.length,
-        companyAdmins: companyAdmins.length,
-        employees: employees.length,
-        meetings: activeMeetings,
-      });
-    } catch (error) {
-      next(error);
+        const activeMeetings = companies.filter((c) => c.zoomMeetingId).length;
+
+        res.json({
+          companies: companies.length,
+          companyAdmins: companyAdmins.length,
+          employees: employees.length,
+          meetings: activeMeetings,
+        });
+      } catch (error) {
+        next(error);
+      }
     }
-  });
+  );
 
   const httpServer = createServer(app);
 
   // WebSocket server for real-time messaging
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
-  wss.on('connection', (ws: WebSocket) => {
-    ws.on('message', (data) => {
+  wss.on("connection", (ws: WebSocket) => {
+    ws.on("message", (data) => {
       try {
         const message = JSON.parse(data.toString());
-        
+
         // Broadcast message to all connected clients
         wss.clients.forEach((client) => {
           if (client !== ws && client.readyState === WebSocket.OPEN) {
@@ -460,7 +737,7 @@ export function registerRoutes(app: Express): Server {
           }
         });
       } catch (error) {
-        console.error('WebSocket message error:', error);
+        console.error("WebSocket message error:", error);
       }
     });
   });

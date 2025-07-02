@@ -128,7 +128,13 @@ export class DatabaseStorage implements IStorage {
       .returning();
     return message;
   }
-
+  async getMessagesBySender(senderId: number): Promise<Message[]> {
+    return await db
+      .select()
+      .from(messages)
+      .where(eq(messages.senderId, senderId))
+      .orderBy(messages.createdAt);
+  }
   async getMessagesByReceiver(receiverId: number): Promise<Message[]> {
     return await db.select().from(messages).where(eq(messages.receiverId, receiverId));
   }
